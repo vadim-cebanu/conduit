@@ -1,0 +1,27 @@
+# Secrets
+.env
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+*.sqlite3
+
+# Node / Angular
+node_modules/
+dist/
+.angular/
+
+# Logs
+*.log
+*-logs.txt
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store

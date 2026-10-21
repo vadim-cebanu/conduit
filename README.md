@@ -6,7 +6,7 @@ This repository contains the source code of both applications together with ever
 
 - **`frontend`** – the Angular 17 app, built with Node.js and served by **nginx**
 - **`backend`** – the Django 1.10 REST API, running with the WSGI server **Gunicorn**
-- **`database`** – **PostgreSQL 16** with a persistent volume
+- **`database`** – **PostgreSQL 16.10** with a persistent volume
 
 Only the frontend is published to the outside on port **8282**. nginx forwards all API requests (`/api/...`) to the backend inside the Docker network, so the backend and the database are not reachable from the internet. All credentials are loaded from a local `.env` file and are never stored in the repository.
 
@@ -25,6 +25,7 @@ The purpose of this project is to containerize an existing, partly outdated appl
   - [Changing the Port](#changing-the-port)
   - [Backend Image](#backend-image)
   - [Frontend Image](#frontend-image)
+  - [Images and Versions](#images-and-versions)
   - [Persistence](#persistence)
   - [Network](#network)
   - [Restart Behaviour](#restart-behaviour)
@@ -51,7 +52,7 @@ The purpose of this project is to containerize an existing, partly outdated appl
 
 ```bash
 # 1. Clone the repository
-git clone <repository-url>
+git clone https://github.com/vadim-cebanu/conduit.git
 cd conduit
 
 # 2. Create your configuration from the template
@@ -119,7 +120,7 @@ Browser ──► http://<VM-IP>:8282
 
 ### Configuration with the .env File
 
-All secrets and changeable values are configured in the `.env` file (created from `.env.example`). Docker Compose reads it automatically and inserts the values with the `${VARIABLE}` notation.
+Not only the secrets, but also all values that may change (ports, workers, versions) are configured in the `.env` file (created from `.env.example`). Docker Compose reads it automatically and inserts the values with the `${VARIABLE}` notation.
 
 > [!NOTE]
 > `.env` is your local configuration and is never committed. Only `.env.example` is part of the repository.
@@ -133,6 +134,12 @@ All secrets and changeable values are configured in the `.env` file (created fro
 | `SECRET_KEY` | – | yes | Secret key of Django |
 | `DEBUG` | `False` | no | Django debug mode. Keep `False` outside of development |
 | `ALLOWED_HOSTS` | `backend,localhost` | no | Hosts accepted by Django (comma separated) |
+| `GUNICORN_WORKERS` | `3` | no | Number of Gunicorn worker processes |
+| `APP_VERSION` | `1.0.0` | no | Version tag of the images `conduit-backend` and `conduit-frontend` |
+| `POSTGRES_VERSION` | `16.10` | no | Version of the PostgreSQL image |
+| `PYTHON_VERSION` | `3.6` | no | Python base image of the backend (build argument) |
+| `NODE_VERSION` | `20.18` | no | Node.js base image for the frontend build (build argument) |
+| `NGINX_VERSION` | `1.27` | no | nginx base image of the frontend (build argument) |
 
 Generate strong values for the secrets:
 
@@ -198,6 +205,13 @@ The backend `Dockerfile` uses a **multi-stage build**:
 | `builder` | `python:3.6-slim` | installs the packages from `requirements.txt` into `/install` |
 | final | `python:3.6-slim` | copies only the installed packages and the source code |
 
+The Python version is a build argument with a default value:
+
+```dockerfile
+ARG PYTHON_VERSION=3.6
+FROM python:${PYTHON_VERSION}-slim AS builder
+```
+
 Environment variables set in the `Dockerfile`:
 
 | Variable | Default | Description |
@@ -216,11 +230,14 @@ exec gunicorn conduit.wsgi:application --bind "0.0.0.0:${BACKEND_PORT}" ...
 > [!NOTE]
 > Python 3.6 is used on purpose: Django 1.10 does not run on newer Python versions.
 
-**Example – use more Gunicorn workers:** add the variable to the `backend` service in `docker-compose.yaml`:
+**Example – use more Gunicorn workers:** change the value in `.env`:
 
-```yaml
-environment:
-  GUNICORN_WORKERS: "5"
+```dotenv
+GUNICORN_WORKERS=5
+```
+
+```bash
+docker compose up -d
 ```
 
 ### Frontend Image
@@ -231,6 +248,16 @@ The frontend `Dockerfile` also uses a **multi-stage build**:
 |---|---|---|
 | `build` | `node:20.18-alpine` | `npm ci` and `npm run build` (production build) |
 | final | `nginx:1.27-alpine` | copies only the built files from `dist/angular-conduit` |
+
+The Node.js and nginx versions are build arguments with default values:
+
+```dockerfile
+ARG NODE_VERSION=20.18
+ARG NGINX_VERSION=1.27
+FROM node:${NODE_VERSION}-alpine AS build
+...
+FROM nginx:${NGINX_VERSION}-alpine
+```
 
 The final image contains no Node.js and no `node_modules`, so it stays small.
 
@@ -249,6 +276,42 @@ location / {
 
 > [!IMPORTANT]
 > The Angular code is compiled during the build. After changes in `frontend/`, rebuild the image with `docker compose up -d --build frontend`.
+
+### Images and Versions
+
+All image versions are pinned, so every build uses the same software:
+
+| Service | Image | Variable in `.env` |
+|---|---|---|
+| `database` | `postgres:16.10` | `POSTGRES_VERSION` |
+| `backend` | built from `backend/` as `conduit-backend:1.0.0` | `APP_VERSION`, `PYTHON_VERSION` |
+| `frontend` | built from `frontend/` as `conduit-frontend:1.0.0` | `APP_VERSION`, `NODE_VERSION`, `NGINX_VERSION` |
+
+In `docker-compose.yaml` each own image has a build context, build arguments and a name with a version tag:
+
+```yaml
+backend:
+  build:
+    context: ./backend
+    args:
+      PYTHON_VERSION: ${PYTHON_VERSION:-3.6}
+  image: conduit-backend:${APP_VERSION:-1.0.0}
+```
+
+**Example – update nginx and create a new image version:**
+
+```dotenv
+NGINX_VERSION=1.28
+APP_VERSION=1.1.0
+```
+
+```bash
+docker compose up -d --build
+docker images | grep conduit
+```
+
+> [!WARNING]
+> Make a backup of the database before changing `POSTGRES_VERSION`. A database created with a newer major version cannot be opened with an older one.
 
 ### Persistence
 
@@ -305,6 +368,7 @@ The container names are shown by `docker compose ps`. Log files (`*-logs.txt`) a
 | `docker compose up -d` | Apply changes from `.env` or `docker-compose.yaml` |
 | `docker compose up -d --build frontend` | Rebuild and restart only the frontend |
 | `docker compose ps` | Show status and ports |
+| `docker images \| grep conduit` | Show the own images and their version tags |
 | `docker compose logs -f backend` | Follow the backend logs |
 | `docker compose restart backend` | Restart the backend |
 | `docker compose down` | Stop and remove the containers (the data stays in the volume) |

@@ -1,0 +1,63 @@
+services:
+  database:
+    image: postgres:${POSTGRES_VERSION:-16.10}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-conduit}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - conduit-net
+
+  backend:
+    build:
+      context: ./backend
+      args:
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.6}
+    image: conduit-backend:${APP_VERSION:-1.0.0}
+    restart: unless-stopped
+    environment:
+      # non-critical configuration
+      POSTGRES_HOST: database
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-conduit}
+      DEBUG: ${DEBUG:-False}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-backend,localhost}
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-3}
+      # credentials from .env
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      SECRET_KEY: ${SECRET_KEY}
+    depends_on:
+      database:
+        condition: service_healthy
+    networks:
+      - conduit-net
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NODE_VERSION: ${NODE_VERSION:-20.18}
+        NGINX_VERSION: ${NGINX_VERSION:-1.27}
+    image: conduit-frontend:${APP_VERSION:-1.0.0}
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-8282}:80"
+    depends_on:
+      - backend
+    networks:
+      - conduit-net
+
+volumes:
+  db-data:
+
+networks:
+  conduit-net:

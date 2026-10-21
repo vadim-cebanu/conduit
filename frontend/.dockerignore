@@ -1,0 +1,17 @@
+# Git and secrets
+.git
+.gitignore
+.husky/
+.env
+
+# Dependencies and build output (created inside the image)
+node_modules/
+dist/
+.angular/
+
+# Not needed in the image
+*.md
+LICENSE
+logo.png
+Dockerfile
+.dockerignore

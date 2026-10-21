@@ -1,11 +1,16 @@
-FROM python:3.6-slim AS builder
+# Python version (build argument with default value)
+ARG PYTHON_VERSION=3.6
+
+# ---------- Stage 1: install the Python dependencies ----------
+FROM python:${PYTHON_VERSION}-slim AS builder
 
 WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-FROM python:3.6-slim
+# ---------- Stage 2: small runtime image ----------
+FROM python:${PYTHON_VERSION}-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

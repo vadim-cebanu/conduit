@@ -25,4 +25,7 @@ urlpatterns = [
         CommentsDestroyAPIView.as_view()),
 
     url(r'^tags/?$', TagListAPIView.as_view()),
+    
+    url(r'^articles/?$', ArticleViewSet.as_view({'get': 'list', 'post': 'create'})),
+
 ]

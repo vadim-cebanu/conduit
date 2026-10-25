@@ -1,0 +1,19 @@
+# Git and secrets
+.git
+.gitignore
+.env
+
+# Python cache and local environments
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Local database
+*.sqlite3
+
+# Not needed in the image
+README.md
+project-logo.png
+Dockerfile
+.dockerignore

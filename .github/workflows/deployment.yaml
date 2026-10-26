@@ -8,6 +8,7 @@ on:
 
 env:
   IMAGE_REGISTRY: ghcr.io/${{ github.repository_owner }}
+  DEPLOY_PATH: conduit
 
 jobs:
   build:
@@ -39,3 +40,55 @@ jobs:
           tags: |
             ${{ env.IMAGE_REGISTRY }}/conduit-${{ matrix.service }}:latest
             ${{ env.IMAGE_REGISTRY }}/conduit-${{ matrix.service }}:${{ github.sha }}
+
+  deploy:
+    name: Deploy to VM
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create .env file from secrets
+        run: |
+          cat > .env << EOF
+          POSTGRES_USER=${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+          SECRET_KEY=${{ secrets.SECRET_KEY }}
+          IMAGE_REGISTRY=${{ env.IMAGE_REGISTRY }}
+          APP_VERSION=${{ github.sha }}
+          EOF
+
+      - name: Copy compose file and configuration to VM
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "docker-compose.yaml,.env"
+          target: ${{ env.DEPLOY_PATH }}
+
+      - name: Pull new images and restart containers
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEPLOY_PATH: ${{ env.DEPLOY_PATH }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: GHCR_USER,GHCR_TOKEN,DEPLOY_PATH
+          script: |
+            set -e
+            cd "${DEPLOY_PATH}"
+            echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+            docker compose pull
+            docker compose down
+            docker compose up -d --no-build
+            docker compose ps
+            docker logout ghcr.io

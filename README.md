@@ -1,8 +1,10 @@
-# Conduit in Docker
+# Conduit Deployment
 
-A Docker Compose setup for running the Conduit application (a Medium clone) with an Angular frontend, a Django backend and a PostgreSQL database.
+Automated build and deployment of the Conduit application (a Medium clone) with GitHub Actions. The application consists of an Angular frontend, a Django backend and a PostgreSQL database, running as Docker containers on a cloud VM.
 
-This repository contains the source code of both applications together with everything needed to run them as containers. Each application has its own multi-stage `Dockerfile`, and Docker Compose starts three services:
+This repository contains the source code of both applications, a multi-stage `Dockerfile` for each of them, a Docker Compose setup and a GitHub Actions workflow. On every push to `main`, the workflow builds the container images, pushes them to the **GitHub Container Registry (GHCR)** and deploys them to the VM via SSH. The VM only pulls and starts the finished images – nothing is built on the VM.
+
+Docker Compose starts three services:
 
 - **`frontend`** – the Angular 17 app, built with Node.js and served by **nginx**
 - **`backend`** – the Django 1.10 REST API, running with the WSGI server **Gunicorn**
@@ -10,16 +12,21 @@ This repository contains the source code of both applications together with ever
 
 Only the frontend is published to the outside on port **8282**. nginx forwards all API requests (`/api/...`) to the backend inside the Docker network, so the backend and the database are not reachable from the internet. All credentials are loaded from a local `.env` file and are never stored in the repository.
 
-The purpose of this project is to containerize an existing, partly outdated application and run it on any machine with Docker in a reproducible way.
+The purpose of this project is to automate the release process of a containerized application: build and release are separated into two jobs, and every change on `main` is deployed to the VM without manual steps.
 
 ## Table of Contents
 
 - [Quickstart](#quickstart)
   - [Prerequisites](#prerequisites)
-  - [Start the Application](#start-the-application)
+  - [Automatic Deployment](#automatic-deployment)
+  - [Run Locally](#run-locally)
 - [Repository Contents](#repository-contents)
 - [Usage](#usage)
   - [How It Works](#how-it-works)
+  - [Deployment Workflow](#deployment-workflow)
+  - [GitHub Secrets](#github-secrets)
+  - [Changing the Deployment](#changing-the-deployment)
+  - [Rollback to an Older Version](#rollback-to-an-older-version)
   - [Configuration with the .env File](#configuration-with-the-env-file)
   - [Non-Critical Configuration](#non-critical-configuration)
   - [Changing the Port](#changing-the-port)
@@ -40,38 +47,53 @@ The purpose of this project is to containerize an existing, partly outdated appl
 
 ### Prerequisites
 
-- A Linux machine or cloud VM with at least **2 GB of free RAM**
+**On the VM:**
+
+- A Linux cloud VM with at least **2 GB of free RAM** and a public IP address
 - **Docker Engine** and the **Docker Compose plugin v2** (`docker compose version`)
-- Port **8282/TCP** open in the firewall of the VM / cloud provider
-- Internet access during the build (to download the base images and packages)
+- The SSH user can run Docker without `sudo` (member of the `docker` group)
+- Port **22/TCP** (SSH) and **8282/TCP** open in the firewall of the VM / cloud provider
+
+**On GitHub:**
+
+- A fork or copy of this repository with GitHub Actions enabled
+- An SSH key pair for the deployment (the public key on the VM, the private key as GitHub Secret)
+- The [GitHub Secrets](#github-secrets) listed below
 
 > [!IMPORTANT]
 > If port 8282 is not open in the firewall of the VM / cloud provider, the containers run but the application is not reachable.
 
-### Start the Application
+### Automatic Deployment
 
 ```bash
-# 1. Clone the repository
+# 1. Create an SSH key only for the deployment (without passphrase)
+ssh-keygen -t ed25519 -f ~/.ssh/github_actions_conduit -C "github-actions-conduit" -N ""
+
+# 2. Copy the public key to the VM
+ssh-copy-id -i ~/.ssh/github_actions_conduit.pub <user>@<VM-IP>
+
+# 3. Test the connection with this key only
+ssh -o IdentitiesOnly=yes -i ~/.ssh/github_actions_conduit <user>@<VM-IP> "docker ps"
+```
+
+4. Add the [GitHub Secrets](#github-secrets) in **Settings → Secrets and variables → Actions**.
+5. Push to `main` (or start the workflow manually in the **Actions** tab with **Run workflow**).
+6. Open `http://<VM-IP>:8282` in the browser.
+
+### Run Locally
+
+```bash
 git clone https://github.com/vadim-cebanu/conduit.git
 cd conduit
-
-# 2. Create your configuration from the template
-cp .env.example .env
-
-# 3. Set your own values for POSTGRES_PASSWORD and SECRET_KEY
-nano .env
-
-# 4. Build the images and start all services in the background
+cp .env.example .env        # set your own POSTGRES_PASSWORD and SECRET_KEY
 docker compose up -d --build
-
-# 5. Check that all three containers are running
 docker compose ps
 ```
 
-Open `http://<VM-IP>:8282` in the browser (on your own computer: `http://localhost:8282`).
+Open `http://localhost:8282` in the browser.
 
 > [!NOTE]
-> The first build takes a few minutes, because the npm packages are installed and the Angular app is compiled.
+> The first local build takes a few minutes, because the npm packages are installed and the Angular app is compiled.
 
 ## Repository Contents
 
@@ -85,6 +107,7 @@ Open `http://<VM-IP>:8282` in the browser (on your own computer: `http://localho
 | `frontend/Dockerfile` | Multi-stage build of the frontend image (Node.js build, nginx runtime). |
 | `frontend/nginx.conf` | nginx configuration: serves the Angular app and forwards `/api/` to the backend. |
 | `frontend/.dockerignore` | Keeps `node_modules`, build output and secrets out of the frontend image. |
+| `.github/workflows/deployment.yaml` | GitHub Actions workflow: builds and pushes the images to GHCR and deploys them to the VM via SCP and SSH. |
 | `docker-compose.yaml` | Defines the services `frontend`, `backend` and `database` with ports, environment, volume, network and restart policy. |
 | `.env.example` | Template for the configuration. Copy it to `.env` and set your own values. `.env` itself is not committed. |
 | `.gitignore` | Keeps secrets (`.env`, keys) and log files out of the repository. |
@@ -95,6 +118,23 @@ Open `http://<VM-IP>:8282` in the browser (on your own computer: `http://localho
 ## Usage
 
 ### How It Works
+
+**Build and release:**
+
+```
+git push (main)
+      │
+      ▼
+GitHub Actions
+  ├── job build   ──► build backend + frontend images ──► push to ghcr.io
+  │
+  └── job deploy  (only if build was successful)
+        ├── create .env from GitHub Secrets
+        ├── SCP: copy docker-compose.yaml and .env to the VM
+        └── SSH: docker compose pull / down / up -d
+```
+
+**Runtime on the VM:**
 
 ```
 Browser ──► http://<VM-IP>:8282
@@ -118,9 +158,113 @@ Browser ──► http://<VM-IP>:8282
 2. The **backend** starts only when the database is healthy. `entrypoint.sh` runs `python manage.py migrate` and then starts Gunicorn.
 3. The **frontend** serves the Angular app with nginx and forwards API requests to the backend.
 
+### Deployment Workflow
+
+The workflow `.github/workflows/deployment.yaml` runs on every push to `main` and can also be started manually (`workflow_dispatch`). It has two separate jobs:
+
+**Job `build` – build and push the images**
+
+| Step | Description |
+|---|---|
+| Checkout code | downloads the repository on the GitHub runner |
+| Log in to GHCR | `docker/login-action` with the automatic `GITHUB_TOKEN` |
+| Build and push | `docker/build-push-action` builds `./backend` and `./frontend` (matrix, in parallel) and pushes both images |
+
+Each image gets two tags:
+
+| Tag | Example | Purpose |
+|---|---|---|
+| `latest` | `ghcr.io/vadim-cebanu/conduit-backend:latest` | always the newest image |
+| commit hash | `ghcr.io/vadim-cebanu/conduit-backend:1b7e929...` | exact, unchangeable version of one commit |
+
+**Job `deploy` – release to the VM** (`needs: build`, so it only runs after a successful build)
+
+| Step | Description |
+|---|---|
+| Create `.env` | writes the secrets and `APP_VERSION=<commit hash>` into a `.env` file on the runner |
+| Copy files to VM | `appleboy/scp-action` copies `docker-compose.yaml` and `.env` to the folder `conduit` on the VM |
+| Deploy | `appleboy/ssh-action` runs on the VM: `docker login ghcr.io`, `docker compose pull`, `docker compose down`, `docker compose up -d --no-build`, `docker compose ps`, `docker logout` |
+
+The SSH script starts with `set -e`, so every failing command stops the script and the workflow ends with an error. If the build fails, the deploy job is not started at all.
+
+> [!NOTE]
+> `--no-build` makes sure that nothing is built on the VM. The VM only uses the images from GHCR. The `build:` section in `docker-compose.yaml` is only used for local builds.
+
+### GitHub Secrets
+
+All sensitive values are stored as GitHub Secrets (**Settings → Secrets and variables → Actions**) and are never part of the repository:
+
+| Secret | Description |
+|---|---|
+| `SSH_HOST` | IP address of the VM |
+| `SSH_USER` | user on the VM (must be able to run Docker) |
+| `SSH_PRIVATE_KEY` | private key of the deployment SSH key (complete, including the `BEGIN` and `END` lines) |
+| `POSTGRES_USER` | database user |
+| `POSTGRES_PASSWORD` | database password |
+| `SECRET_KEY` | secret key of Django |
+
+`GITHUB_TOKEN` is created automatically by GitHub for every workflow run. It is used to push the images and to log in to GHCR on the VM, and it expires when the job is finished.
+
+> [!WARNING]
+> If a database already exists on the VM, `POSTGRES_USER` and `POSTGRES_PASSWORD` must match the values used when the volume was created. Otherwise the backend cannot connect to the database.
+
+### Changing the Deployment
+
+The workflow is configured with variables at the top of `deployment.yaml`:
+
+```yaml
+env:
+  IMAGE_REGISTRY: ghcr.io/${{ github.repository_owner }}
+  DEPLOY_PATH: conduit
+```
+
+| Variable | Default | Description |
+|---|---|---|
+| `IMAGE_REGISTRY` | `ghcr.io/<repository owner>` | registry and namespace of the images |
+| `DEPLOY_PATH` | `conduit` | folder on the VM (relative to the home directory of `SSH_USER`) |
+
+**Example – deploy into another folder on the VM:**
+
+```yaml
+env:
+  DEPLOY_PATH: apps/conduit
+```
+
+**Example – deploy from another branch:**
+
+```yaml
+on:
+  push:
+    branches:
+      - main
+      - release
+```
+
+**Example – add a non-secret setting for the VM:** add a line to the step *Create .env file from secrets*:
+
+```yaml
+          GUNICORN_WORKERS=5
+```
+
+> [!CAUTION]
+> Docker Compose uses the folder name as project name. If `DEPLOY_PATH` is changed, a new volume is created and the existing data is not used.
+
+### Rollback to an Older Version
+
+Every image version stays in GHCR with its commit hash. To go back to an older version, set the hash in the `.env` file on the VM and restart:
+
+```bash
+cd ~/conduit
+sed -i 's/^APP_VERSION=.*/APP_VERSION=<old commit hash>/' .env
+docker compose pull
+docker compose up -d --no-build
+```
+
+The next deployment from GitHub Actions overwrites `.env` again with the newest version.
+
 ### Configuration with the .env File
 
-Not only the secrets, but also all values that may change (ports, workers, versions) are configured in the `.env` file (created from `.env.example`). Docker Compose reads it automatically and inserts the values with the `${VARIABLE}` notation.
+Not only the secrets, but also all values that may change (ports, workers, versions) are configured in the `.env` file. Locally it is created from `.env.example`; on the VM it is created by the deployment workflow. Docker Compose reads it automatically and inserts the values with the `${VARIABLE}` notation.
 
 > [!NOTE]
 > `.env` is your local configuration and is never committed. Only `.env.example` is part of the repository.
@@ -135,7 +279,8 @@ Not only the secrets, but also all values that may change (ports, workers, versi
 | `DEBUG` | `False` | no | Django debug mode. Keep `False` outside of development |
 | `ALLOWED_HOSTS` | `backend,localhost` | no | Hosts accepted by Django (comma separated) |
 | `GUNICORN_WORKERS` | `3` | no | Number of Gunicorn worker processes |
-| `APP_VERSION` | `1.0.0` | no | Version tag of the images `conduit-backend` and `conduit-frontend` |
+| `IMAGE_REGISTRY` | `ghcr.io/vadim-cebanu` | no | Registry and namespace of the own images |
+| `APP_VERSION` | `latest` | no | Tag of the own images (`latest` or a commit hash) |
 | `POSTGRES_VERSION` | `16.10` | no | Version of the PostgreSQL image |
 | `PYTHON_VERSION` | `3.6` | no | Python base image of the backend (build argument) |
 | `NODE_VERSION` | `20.18` | no | Node.js base image for the frontend build (build argument) |
@@ -284,8 +429,8 @@ All image versions are pinned, so every build uses the same software:
 | Service | Image | Variable in `.env` |
 |---|---|---|
 | `database` | `postgres:16.10` | `POSTGRES_VERSION` |
-| `backend` | built from `backend/` as `conduit-backend:1.0.0` | `APP_VERSION`, `PYTHON_VERSION` |
-| `frontend` | built from `frontend/` as `conduit-frontend:1.0.0` | `APP_VERSION`, `NODE_VERSION`, `NGINX_VERSION` |
+| `backend` | `ghcr.io/vadim-cebanu/conduit-backend:<tag>` | `IMAGE_REGISTRY`, `APP_VERSION`, `PYTHON_VERSION` |
+| `frontend` | `ghcr.io/vadim-cebanu/conduit-frontend:<tag>` | `IMAGE_REGISTRY`, `APP_VERSION`, `NODE_VERSION`, `NGINX_VERSION` |
 
 In `docker-compose.yaml` each own image has a build context, build arguments and a name with a version tag:
 
@@ -295,20 +440,18 @@ backend:
     context: ./backend
     args:
       PYTHON_VERSION: ${PYTHON_VERSION:-3.6}
-  image: conduit-backend:${APP_VERSION:-1.0.0}
+  image: ${IMAGE_REGISTRY:-ghcr.io/vadim-cebanu}/conduit-backend:${APP_VERSION:-latest}
 ```
 
-**Example – update nginx and create a new image version:**
+The image name points to GHCR, so the VM can pull the images built by the workflow. Locally, `docker compose up -d --build` still builds the images from the `build:` section.
 
-```dotenv
-NGINX_VERSION=1.28
-APP_VERSION=1.1.0
+**Example – update nginx:** change the default value in `frontend/Dockerfile` (or the build argument in the workflow), then push to `main`:
+
+```dockerfile
+ARG NGINX_VERSION=1.28
 ```
 
-```bash
-docker compose up -d --build
-docker images | grep conduit
-```
+The workflow builds new images with the new commit hash and deploys them.
 
 > [!WARNING]
 > Make a backup of the database before changing `POSTGRES_VERSION`. A database created with a newer major version cannot be opened with an older one.
@@ -388,6 +531,24 @@ The frontend (Angular 17) and the backend (Django 1.10) are original projects. O
 
 ## Testing
 
+**0. The workflow runs without errors:**
+
+Push to `main` or start the workflow with **Actions → Build and Deploy → Run workflow**. All jobs (`build (backend)`, `build (frontend)`, `Deploy to VM`) must finish with a green check mark. The images appear under **Packages** in the GitHub profile.
+
+On the VM, the containers must use the images from GHCR with the commit hash:
+
+```bash
+cd ~/conduit
+docker compose ps
+```
+
+```
+conduit-backend-1    ghcr.io/vadim-cebanu/conduit-backend:<commit hash>    ...   Up
+conduit-frontend-1   ghcr.io/vadim-cebanu/conduit-frontend:<commit hash>   ...   Up
+```
+
+The following tests are run on the VM in the folder `~/conduit`.
+
 **1. All services are running:**
 
 ```bash
@@ -416,14 +577,14 @@ docker compose logs backend | grep -i gunicorn
 
 The output contains `Starting gunicorn` and `Listening at: http://0.0.0.0:8000`.
 
-**5. The data is kept after a restart:**
+**5. The data is kept after a restart and after a new deployment:**
 
 ```bash
 docker compose down
-docker compose up -d
+docker compose up -d --no-build
 ```
 
-Log in again: the user and the articles still exist.
+Log in again: the user and the articles still exist. The same is true after a new run of the workflow.
 
 **6. The containers restart automatically after an error:**
 
@@ -457,7 +618,10 @@ Known remaining issues:
 ## Security Notes
 
 - No passwords, tokens, usernames, IP addresses or SSH keys are stored in this repository.
-- All credentials are loaded from `.env`, which is excluded by `.gitignore` and both `.dockerignore` files.
+- The VM address, the SSH user, the SSH key and all credentials are stored as GitHub Secrets.
+- A separate SSH key is used only for the deployment, so it can be removed without affecting other access.
+- The temporary `GITHUB_TOKEN` is used to access GHCR, and `docker logout` is run on the VM after the deployment.
+- All credentials are loaded from `.env`, which is excluded by `.gitignore` and both `.dockerignore` files. On the VM it is created by the workflow.
 - The credentials have no default values, so the setup never runs with a known password.
 - Only the frontend port is published. The backend and the database are only reachable inside the Docker network.
 - `DEBUG` is `False` by default.

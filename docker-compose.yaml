@@ -21,7 +21,7 @@ services:
       context: ./backend
       args:
         PYTHON_VERSION: ${PYTHON_VERSION:-3.6}
-    image: conduit-backend:${APP_VERSION:-1.0.0}
+    image: ${IMAGE_REGISTRY:-ghcr.io/vadim-cebanu}/conduit-backend:${APP_VERSION:-latest}    
     restart: unless-stopped
     environment:
       # non-critical configuration
@@ -47,7 +47,7 @@ services:
       args:
         NODE_VERSION: ${NODE_VERSION:-20.18}
         NGINX_VERSION: ${NGINX_VERSION:-1.27}
-    image: conduit-frontend:${APP_VERSION:-1.0.0}
+    image: ${IMAGE_REGISTRY:-ghcr.io/vadim-cebanu}/conduit-frontend:${APP_VERSION:-latest}    
     restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-8282}:80"

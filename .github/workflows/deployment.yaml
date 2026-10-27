@@ -23,17 +23,17 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push ${{ matrix.service }} image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./${{ matrix.service }}
           push: true
@@ -51,7 +51,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Create .env file from secrets
         run: |
@@ -85,10 +85,13 @@ jobs:
           envs: GHCR_USER,GHCR_TOKEN,DEPLOY_PATH
           script: |
             set -e
-            cd "${DEPLOY_PATH}"
+            mkdir -p "${HOME}/${DEPLOY_PATH}"
+            chmod 600 "${HOME}/${DEPLOY_PATH}/.env"
+            cd "${HOME}/${DEPLOY_PATH}"
             echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
             docker compose pull
             docker compose down
             docker compose up -d --no-build
             docker compose ps
             docker logout ghcr.io
+            
